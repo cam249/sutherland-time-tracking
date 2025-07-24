@@ -21,6 +21,13 @@ const db = new sqlite3.Database(dbPath, (err) => {
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Serve static files from the 'public' directory
+// app.use(express.static('public'));
+
+// Serve the index.html file for the root URL
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 // --- Backup Function ---
 const createBackup = async () => {
