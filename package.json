@@ -13,8 +13,8 @@
   "dependencies": {
     "@google-cloud/firestore": "^7.11.3",
     "cors": "^2.8.5",
-    "express": "^5.1.0",
-    "sqlite3": "^5.1.7",
-    "uuid": "^11.1.0"
+  "express": "^5.1.0",
+  "better-sqlite3": "^11.1.2",
+  "uuid": "^11.1.0"
   }
 }
