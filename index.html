@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sutherland Landscaping Time Tracker</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script>
+        // Custom color palette based on the user's image
+        tailwind.config = {
+          theme: {
+            extend: {
+              colors: {
+                'primary': '#6D9773', // Sage Green
+                'primary-dark': '#5a7f60',
+                'background': '#0C3B2E', // Dark Green/Pine
+                'surface': '#1a4c3f', // Slightly lighter green for cards
+                'accent-brown': '#B46617',
+                'accent-yellow': '#FFBA00',
+                'text-main': '#F0FDF4',
+                'text-secondary': '#A3B3A7',
+              }
+            }
+          }
+        }
+    </script>
+    
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        body { 
+            background-color: #0C3B2E; 
+            color: #F0FDF4; 
+            font-family: 'Inter', sans-serif; 
+        }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800&display=swap');
+
+        @media (max-width: 768px) {
+            .responsive-table thead { display: none; }
+            .responsive-table tr { display: block; margin-bottom: 1rem; border-bottom: 2px solid #1a4c3f; padding-bottom: 1rem; }
+            .responsive-table tfoot tr { display: block; margin-top: 1rem; border-top: 2px solid #1a4c3f; padding-top: 1rem; }
+            .responsive-table td, .responsive-table th { display: block; text-align: right; padding-left: 50%; position: relative; }
+            .responsive-table td::before, .responsive-table th::before { 
+                content: attr(data-label); 
+                position: absolute; 
+                left: 0.5rem; 
+                width: 45%; 
+                padding-right: 0.5rem; 
+                white-space: nowrap; 
+                text-align: left; 
+                font-weight: bold; 
+                color: #A3B3A7; 
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // --- const API_BASE_URL = 'http://localhost:3001/api'; ---
+        // --- const API_BASE_URL = 'https://time-tracker-backend-mscl.onrender.com/api'; ---
+
+        const API_BASE_URL = 'http://localhost:3001/api';
+
+        // --- Helper Components ---
+        const Icon = ({ path, className = "w-6 h-6" }) => (
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+            <path strokeLinecap="round" strokeLinejoin="round" d={path} />
+          </svg>
+        );
+        const ProgressBar = ({ progress, colorClass = "bg-accent-yellow" }) => {
+            const safeProgress = Math.max(0, Math.min(100, progress));
+            return (<div className="w-full bg-background rounded-full h-2.5 mt-2"><div className={`${colorClass} h-2.5 rounded-full transition-all duration-500`} style={{ width: `${safeProgress}%`}}></div></div>);
+        };
+
+        // --- Timer Components ---
+        const formatTime = (totalSeconds) => {
+            const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
+            const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
+            const seconds = String(Math.floor(totalSeconds % 60)).padStart(2, '0');
+            return `${hours}:${minutes}:${seconds}`;
+        };
+
+        const TimerCard = ({ timer, onStop, properties }) => {
+            const [elapsedTime, setElapsedTime] = React.useState(Math.floor((new Date() - new Date(timer.startTime)) / 1000));
+
+            React.useEffect(() => {
+                const interval = setInterval(() => {
+                    setElapsedTime(Math.floor((new Date() - new Date(timer.startTime)) / 1000));
+                }, 1000);
+                return () => clearInterval(interval);
+            }, [timer.startTime]);
+
+            const property = properties.find(p => p.address === timer.propertyAddress);
+            const clientName = property ? property.fullName : timer.client;
+
+            return (
+                <div className="bg-surface p-4 rounded-lg shadow-lg flex flex-col animate-fade-in border border-primary/20">
+                    <div>
+                        <h3 className="text-lg font-bold text-text-main truncate" title={clientName}>{clientName}</h3>
+                        <p className="text-sm text-text-secondary truncate">{timer.propertyAddress}</p>
+                        <p className="text-sm text-text-secondary truncate">{timer.service}</p>
+                    </div>
+                    <div className="my-3">
+                        <p className="text-xs text-text-secondary">Employees</p>
+                        <p className="text-sm text-text-main truncate">{timer.employees.join(', ')}</p>
+                    </div>
+                    <div className="flex-grow"></div>
+                    <div className="bg-background border border-primary/20 rounded-md p-3 my-3 text-center">
+                        <p className="text-3xl font-mono font-bold text-white">{formatTime(elapsedTime)}</p>
+                    </div>
+                    <button 
+                        onClick={() => onStop(timer.id)}
+                        className="w-full flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md text-white bg-accent-brown hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background focus:ring-accent-brown transition-transform transform hover:scale-105"
+                    >
+                        <Icon path="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" className="w-5 h-5 mr-2" />
+                        Stop Timer & Save
+                    </button>
+                </div>
+            );
+        };
+
+        // --- Main App Components ---
+        const Header = ({ onAddNew, view, setView, activeTimerCount }) => {
+          const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
+          const menuItems = [
+              { key: 'timers', label: 'Timers', iconPath: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z' },
+              { key: 'log', label: 'Time Log', iconPath: 'M3.75 9.75h16.5m-16.5 4.5h16.5m-16.5 4.5h16.5m-16.5-13.5h16.5' },
+              { key: 'progress', label: 'Dashboard', iconPath: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z' },
+              { key: 'reporting', label: 'Reporting', iconPath: 'M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3' },
+              { key: 'admin', label: 'Admin', iconPath: 'M10.5 6h9.75M10.5 12h9.75M10.5 18h9.75M3.75 6a1.125 1.125 0 11-2.25 0 1.125 1.125 0 012.25 0zM3.75 12a1.125 1.125 0 11-2.25 0 1.125 1.125 0 012.25 0zM3.75 18a1.125 1.125 0 11-2.25 0 1.125 1.125 0 012.25 0z' }
+          ];
+
+          const handleMenuClick = (newView) => {
+              setView(newView);
+              setIsMobileMenuOpen(false);
+          }
+
+          return (
+            <>
+              <header className="bg-surface shadow-md sticky top-0 z-20 border-b border-primary/20">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                  <div className="flex justify-between items-center h-16">
+                    <div className="flex items-center space-x-2 sm:space-x-4">
+                      <img className="h-10 w-10" src="https://www.sutherlandlandscaping.org/wp-content/uploads/2022/12/Sutherland_Landscaping_Icon-Green.svg" alt="Sutherland Landscaping Logo" />
+                      <h1 className="text-xl sm:text-2xl font-bold text-white">Time Tracker</h1>
+                    </div>
+                    <div className="flex items-center">
+                      {/* Desktop Menu */}
+                      <div className="hidden sm:flex items-center space-x-1 rounded-lg bg-background p-1">
+                        {menuItems.map(item => (
+                            <button key={item.key} onClick={() => setView(item.key)} className={`relative px-3 py-1 text-sm font-medium rounded-md transition-colors ${view === item.key ? 'bg-primary text-white shadow' : 'text-text-secondary hover:bg-surface'}`}>
+                                {item.label}
+                                {item.key === 'timers' && activeTimerCount > 0 && (
+                                    <span className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs font-bold text-white ring-2 ring-surface">
+                                        {activeTimerCount}
+                                    </span>
+                                )}
+                            </button>
+                        ))}
+                      </div>
+                      {/* Mobile Menu Buttons */}
+                      <div className="sm:hidden flex items-center space-x-2">
+                         <button onClick={onAddNew} title="Add New Entry" className="inline-flex items-center justify-center p-3 border border-transparent rounded-full shadow-sm text-background bg-accent-yellow hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-surface focus:ring-accent-yellow transition-transform transform hover:scale-105">
+                            <Icon path="M12 4.5v15m7.5-7.5h-15" className="w-6 h-6" />
+                         </button>
+                         <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} title="Menu" className="relative z-30 inline-flex items-center justify-center p-3 border border-transparent rounded-full shadow-sm text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-surface focus:ring-primary">
+                            <div className="w-6 h-6 relative">
+                                <span className={`block absolute w-5 h-0.5 bg-white transition-all duration-300 ease-in-out left-1/2 top-1/2 -translate-x-1/2 ${isMobileMenuOpen ? 'rotate-45' : '-translate-y-[6px]'}`}></span>
+                                <span className={`block absolute w-5 h-0.5 bg-white transition-all duration-300 ease-in-out left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 ${isMobileMenuOpen ? 'opacity-0' : 'opacity-100'}`}></span>
+                                <span className={`block absolute w-5 h-0.5 bg-white transition-all duration-300 ease-in-out left-1/2 top-1/2 -translate-x-1/2 ${isMobileMenuOpen ? '-rotate-45' : 'translate-y-[4px]'}`}></span>
+                            </div>
+                         </button>
+                      </div>
+                       {/* Desktop Add Button */}
+                      <button onClick={onAddNew} title="Add New Entry" className="hidden sm:inline-flex items-center justify-center ml-4 p-3 border border-transparent rounded-full shadow-sm text-background bg-accent-yellow hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-surface focus:ring-accent-yellow transition-transform transform hover:scale-105">
+                        <Icon path="M12 4.5v15m7.5-7.5h-15" className="w-6 h-6" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </header>
+              {/* Mobile Menu Overlay */}
+              <div className={`sm:hidden fixed top-0 left-0 right-0 bottom-0 bg-background/90 backdrop-blur-sm z-10 transition-all duration-300 ease-in-out ${isMobileMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'}`}>
+                <div className="flex flex-col items-center justify-center h-full px-4 pt-4 pb-3 space-y-4">
+                  {menuItems.map(item => (
+                    <button key={item.key} onClick={() => handleMenuClick(item.key)} className={`relative w-full flex items-center justify-center space-x-3 px-4 py-4 rounded-lg text-xl font-medium transition-all duration-200 ${view === item.key ? 'bg-primary text-white scale-105 shadow-lg' : 'text-text-secondary hover:bg-surface hover:text-white'}`}>
+                        <Icon path={item.iconPath} className="w-7 h-7" />
+                        <span>{item.label}</span>
+                        {item.key === 'timers' && activeTimerCount > 0 && (
+                            <span className="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-sm font-bold text-white ring-2 ring-background">
+                                {activeTimerCount}
+                            </span>
+                        )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          );
+        };
+
+        const ServiceProgressCard = ({ serviceName, currentHours, estimatedHours }) => {
+            const progress = estimatedHours > 0 ? (currentHours / estimatedHours) * 100 : 0;
+            return (
+                <div className="bg-surface p-4 rounded-lg shadow-lg border border-primary/20">
+                    <h3 className="text-lg font-bold text-text-main truncate" title={serviceName}>{serviceName}</h3>
+                    <div className="flex justify-between items-center text-sm text-text-secondary mt-2">
+                        <span>{currentHours.toFixed(2)} hrs</span>
+                        <span>{estimatedHours} hrs</span>
+                    </div>
+                    <ProgressBar progress={progress} />
+                </div>
+            );
+        };
+        
+        const ServiceCardsGrid = ({ entries, properties, selectedAddress }) => {
+            const serviceProgressData = React.useMemo(() => {
+                if (!selectedAddress) return [];
+                const selectedProperty = properties.find(p => p.address === selectedAddress);
+                if (!selectedProperty) return [];
+                const propertyEntries = entries.filter(e => e.propertyAddress === selectedAddress);
+                const estimatedHours = selectedProperty.services || {};
+                
+                const combinedCategoryName = "Pruning + Bed Maintenance + Leaf Cleanup";
+                const servicesToCombine = ["Pruning", "Bed Maintenance", "Leaf Cleanup"];
+                
+                const combinedData = { name: combinedCategoryName, currentHours: 0, estimatedHours: 0 };
+                const otherServices = [];
+
+                Object.entries(estimatedHours).forEach(([serviceName, estHours]) => {
+                    if (serviceName === combinedCategoryName || servicesToCombine.includes(serviceName)) {
+                        combinedData.estimatedHours += estHours;
+                    } else {
+                        const currentHours = propertyEntries
+                            .filter(e => e.service === serviceName)
+                            .reduce((sum, e) => sum + (parseFloat(e.totalHours || 0) * e.employees.length), 0);
+                        if (estHours > 0) {
+                            otherServices.push({ name: serviceName, currentHours, estimatedHours: estHours });
+                        }
+                    }
+                });
+
+                propertyEntries.forEach(entry => {
+                    if (servicesToCombine.includes(entry.service)) {
+                        combinedData.currentHours += (parseFloat(entry.totalHours || 0) * entry.employees.length);
+                    }
+                });
+                
+                const finalServiceList = [...otherServices];
+                if (combinedData.estimatedHours > 0) {
+                    finalServiceList.unshift(combinedData);
+                }
+
+                return finalServiceList;
+            }, [selectedAddress, entries, properties]);
+
+            if (properties.length === 0 || serviceProgressData.length === 0) return null;
+            return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                    {serviceProgressData.map((service, index) => {
+                        return <ServiceProgressCard key={service.name} serviceName={service.name} currentHours={service.currentHours} estimatedHours={service.estimatedHours} />
+                    })}
+                </div>
+            );
+        };
+
+        const TimeLogView = ({ entries, onEdit, onDelete, properties }) => {
+            const [filter, setFilter] = React.useState('');
+            const [timeLogView, setTimeLogView] = React.useState('list');
+
+            const filteredEntries = React.useMemo(() => {
+                if (!filter) return entries;
+                const lowercasedFilter = filter.toLowerCase();
+                return entries.filter(entry => {
+                    const property = properties.find(p => p.address === entry.propertyAddress);
+                    const clientName = property ? property.fullName : entry.client;
+                    return (
+                        clientName.toLowerCase().includes(lowercasedFilter) ||
+                        entry.propertyAddress.toLowerCase().includes(lowercasedFilter) ||
+                        entry.service.toLowerCase().includes(lowercasedFilter)
+                    );
+                });
+            }, [filter, entries, properties]);
+
+            return (
+                <div>
+                    <h1 className="text-3xl font-bold text-white mb-6">Time Log</h1>
+                    <div className="flex flex-col sm:flex-row justify-between items-center mb-4 gap-4">
+                        <div className="relative w-full sm:w-1/3">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <Icon path="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" className="h-5 w-5 text-text-secondary" />
+                            </div>
+                            <input
+                                type="text"
+                                placeholder="Filter by client, address, service..."
+                                value={filter}
+                                onChange={(e) => setFilter(e.target.value)}
+                                className="block w-full p-3 pl-10 rounded-md bg-surface border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary"
+                            />
+                        </div>
+                        <div className="inline-flex rounded-md shadow-sm bg-background p-1">
+                            <button onClick={() => setTimeLogView('list')} className={`px-4 py-2 text-sm font-medium rounded-l-md transition-colors ${timeLogView === 'list' ? 'bg-primary text-white' : 'text-text-secondary hover:bg-surface'}`}>List View</button>
+                            <button onClick={() => setTimeLogView('calendar')} className={`px-4 py-2 text-sm font-medium rounded-r-md transition-colors ${timeLogView === 'calendar' ? 'bg-primary text-white' : 'text-text-secondary hover:bg-surface'}`}>Calendar View</button>
+                        </div>
+                    </div>
+                    {timeLogView === 'list' ? 
+                        <TimeLogTable entries={filteredEntries} onEdit={onEdit} onDelete={onDelete} properties={properties} /> : 
+                        <CalendarView entries={filteredEntries} onEdit={onEdit} properties={properties} />
+                    }
+                </div>
+            );
+        };
+
+        const TimeLogTable = ({ entries, onEdit, onDelete, properties }) => {
+          if (entries.length === 0) {
+            return (
+              <div className="text-center py-16 bg-surface rounded-lg shadow-lg border-primary/20">
+                <Icon path="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" className="mx-auto h-12 w-12 text-text-secondary" />
+                <h3 className="mt-2 text-lg font-medium text-text-main">No time entries found</h3>
+                <p className="mt-1 text-sm text-text-secondary">Try adjusting your filter or adding a new entry.</p>
+              </div>
+            );
+          }
+          return (
+            <div className="bg-surface shadow-lg rounded-lg overflow-x-auto border border-primary/20">
+              <table className="min-w-full divide-y divide-primary/20 responsive-table">
+                <thead className="bg-background/50"><tr>{['Date', 'Client', 'Property Address', 'Service', 'Employees', 'Time In', 'Time Out', 'Total Hours', 'Man-Hours', 'Actions'].map(header => <th key={header} scope="col" className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">{header}</th>)}</tr></thead>
+                <tbody className="bg-surface divide-y divide-primary/20 md:divide-y-0">
+                  {entries.map((entry) => {
+                    const property = properties.find(p => p.address === entry.propertyAddress);
+                    const clientName = property ? property.fullName : entry.client;
+                    const manHours = (parseFloat(entry.totalHours || 0) * entry.employees.length).toFixed(2);
+                    const actions = onEdit && onDelete ? (
+                      <div className="flex items-center justify-end space-x-2">
+                        <button onClick={() => onEdit(entry)} className="text-accent-yellow hover:text-opacity-80 p-1 rounded-full hover:bg-background/50 transition"><Icon path="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" className="w-5 h-5"/></button>
+                        <button onClick={() => onDelete(entry.id)} className="text-accent-brown hover:text-opacity-80 p-1 rounded-full hover:bg-background/50 transition"><Icon path="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" className="w-5 h-5"/></button>
+                      </div>
+                    ) : null;
+                    return (
+                        <tr key={entry.id} className="hover:bg-background/50">
+                          <td data-label="Date" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{entry.date}</td>
+                          <td data-label="Client" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm font-medium text-text-main">{clientName}</td>
+                          <td data-label="Property Address" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{entry.propertyAddress}</td>
+                          <td data-label="Service" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{entry.service}</td>
+                          <td data-label="Employees" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{entry.employees.join(', ')}</td>
+                          <td data-label="Time In" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{entry.timeIn}</td>
+                          <td data-label="Time Out" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{entry.timeOut}</td>
+                          <td data-label="Total Hours" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm font-bold text-text-main">{entry.totalHours}</td>
+                          <td data-label="Man-Hours" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm font-bold text-text-main">{manHours}</td>
+                          <td data-label="Actions" className="px-6 py-2 md:py-4 whitespace-nowrap text-right text-sm font-medium">{actions}</td>
+                        </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        };
+        
+        const CalendarView = ({ entries, onEdit, properties }) => {
+            const [currentDate, setCurrentDate] = React.useState(new Date());
+            const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+            const lastDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+            const daysInMonth = lastDayOfMonth.getDate();
+            const startDayOfWeek = firstDayOfMonth.getDay();
+            const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+            const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+            const calendarDays = [];
+            for (let i = 0; i < startDayOfWeek; i++) { calendarDays.push(<div key={`empty-start-${i}`} className="border border-primary/20 bg-background/30 h-24 sm:h-32"></div>); }
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const entriesForDay = entries.filter(entry => entry.date === dateStr);
+                calendarDays.push(
+                    <div key={day} className="border border-primary/20 h-24 sm:h-32 p-1.5 flex flex-col">
+                        <div className="font-bold text-sm text-text-main">{day}</div>
+                        <div className="flex-grow overflow-y-auto mt-1 space-y-1">
+                            {entriesForDay.map(entry => {
+                                const property = properties.find(p => p.address === entry.propertyAddress);
+                                const clientName = property ? property.fullName : entry.client;
+                                return (<button key={entry.id} onClick={() => onEdit(entry)} className="w-full text-left bg-primary hover:bg-primary-dark p-1 rounded-md text-xs text-white truncate">{clientName}</button>);
+                            })}
+                        </div>
+                    </div>
+                );
+            }
+            return (
+                <div className="bg-surface shadow-lg rounded-lg p-4 border border-primary/20">
+                    <div className="flex justify-between items-center mb-4">
+                        <button onClick={prevMonth} className="p-2 rounded-full hover:bg-background/50"><Icon path="M15.75 19.5L8.25 12l7.5-7.5" /></button>
+                        <h2 className="text-xl font-bold text-white">{currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}</h2>
+                        <button onClick={nextMonth} className="p-2 rounded-full hover:bg-background/50"><Icon path="M8.25 4.5l7.5 7.5-7.5 7.5" /></button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-px">
+                        {daysOfWeek.map(day => <div key={day} className="text-center font-semibold text-sm py-2 text-text-secondary">{day}</div>)}
+                        {calendarDays}
+                    </div>
+                </div>
+            );
+        };
+
+        const CheckboxMultiSelect = ({ label, options, selectedOptions, onChange }) => {
+            const [isOpen, setIsOpen] = React.useState(false);
+            const wrapperRef = React.useRef(null);
+
+            React.useEffect(() => {
+                function handleClickOutside(event) {
+                    if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+                        setIsOpen(false);
+                    }
+                }
+                document.addEventListener("mousedown", handleClickOutside);
+                return () => document.removeEventListener("mousedown", handleClickOutside);
+            }, [wrapperRef]);
+            
+            const handleToggle = (option) => {
+                const newSelection = selectedOptions.includes(option)
+                    ? selectedOptions.filter(item => item !== option)
+                    : [...selectedOptions, option];
+                onChange(newSelection);
+            };
+
+            return (
+                <div ref={wrapperRef}>
+                    <label className="block text-sm font-medium text-text-secondary mb-1">{label}</label>
+                    <div className="relative">
+                        <button 
+                            type="button" 
+                            onClick={() => setIsOpen(!isOpen)} 
+                            className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary text-left"
+                        >
+                            <span className="truncate">
+                                {selectedOptions.length === 0 ? `Select ${label.toLowerCase()}...` : `${selectedOptions.length} selected`}
+                            </span>
+                            <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                                <Icon path="M8.25 15L12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" className="w-5 h-5 text-text-secondary" />
+                            </span>
+                        </button>
+                        {isOpen && (
+                            <div className="absolute z-10 mt-1 w-full bg-surface rounded-md shadow-lg border border-primary/30 max-h-60 overflow-auto">
+                                <ul className="p-2 space-y-1">
+                                    {options.map(option => (
+                                        <li key={option}>
+                                            <label className="flex items-center space-x-3 p-2 rounded-md hover:bg-background cursor-pointer">
+                                                <input 
+                                                    type="checkbox"
+                                                    checked={selectedOptions.includes(option)}
+                                                    onChange={() => handleToggle(option)}
+                                                    className="h-5 w-5 text-primary bg-surface border-primary/30 rounded focus:ring-primary"
+                                                />
+                                                <span className="text-text-main">{option}</span>
+                                            </label>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+        
+        const ReportingView = ({ entries, properties, employees }) => {
+            const [startDate, setStartDate] = React.useState('');
+            const [endDate, setEndDate] = React.useState('');
+            const [selectedClients, setSelectedClients] = React.useState([]);
+            const [selectedEmployees, setSelectedEmployees] = React.useState([]);
+
+            const filteredEntries = React.useMemo(() => {
+                return entries.filter(entry => {
+                    const entryDate = new Date(entry.date);
+                    const start = startDate ? new Date(startDate) : null;
+                    const end = endDate ? new Date(endDate) : null;
+
+                    if (start && entryDate < start) return false;
+                    if (end && entryDate > end) return false;
+
+                    const property = properties.find(p => p.address === entry.propertyAddress);
+                    const clientName = property ? property.fullName : entry.client;
+                    if (selectedClients.length > 0 && !selectedClients.includes(clientName)) return false;
+
+                    if (selectedEmployees.length > 0 && !entry.employees.some(emp => selectedEmployees.includes(emp))) return false;
+                    
+                    return true;
+                });
+            }, [startDate, endDate, selectedClients, selectedEmployees, entries, properties]);
+            
+            const clientNames = React.useMemo(() => [...new Set(properties.map(p => p.fullName))].sort(), [properties]);
+
+            const exportToCSV = () => {
+                const headers = ['Date', 'Client', 'Property Address', 'Service', 'Employees', 'Time In', 'Time Out', 'Total Hours'];
+                const csvRows = [headers.join(',')];
+
+                filteredEntries.forEach(entry => {
+                    const property = properties.find(p => p.address === entry.propertyAddress);
+                    const clientName = property ? property.fullName : entry.client;
+                    const row = [
+                        entry.date,
+                        `"${clientName}"`,
+                        `"${entry.propertyAddress}"`,
+                        `"${entry.service}"`,
+                        `"${entry.employees.join('; ')}"`,
+                        entry.timeIn,
+                        entry.timeOut,
+                        entry.totalHours
+                    ];
+                    csvRows.push(row.join(','));
+                });
+
+                const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                const url = URL.createObjectURL(blob);
+                link.setAttribute('href', url);
+                link.setAttribute('download', 'time_report.csv');
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h1 className="text-3xl font-bold text-white">Reporting & Export</h1>
+                    <div className="bg-surface p-6 rounded-lg shadow-lg border-primary/20 space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                            {/* Date Filters */}
+                            <div><label htmlFor="startDate" className="block text-sm font-medium text-text-secondary mb-1">Start Date</label><input type="date" name="startDate" id="startDate" value={startDate} onChange={e => setStartDate(e.target.value)} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /></div>
+                            <div><label htmlFor="endDate" className="block text-sm font-medium text-text-secondary mb-1">End Date</label><input type="date" name="endDate" id="endDate" value={endDate} onChange={e => setEndDate(e.target.value)} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /></div>
+                            {/* Client Filter */}
+                            <div>
+                                <CheckboxMultiSelect 
+                                    label="Clients"
+                                    options={clientNames}
+                                    selectedOptions={selectedClients}
+                                    onChange={setSelectedClients}
+                                />
+                            </div>
+                            {/* Employee Filter */}
+                            <div>
+                                <CheckboxMultiSelect 
+                                    label="Employees"
+                                    options={employees}
+                                    selectedOptions={selectedEmployees}
+                                    onChange={setSelectedEmployees}
+                                />
+                            </div>
+                        </div>
+                        <div>
+                            <button onClick={exportToCSV} disabled={filteredEntries.length === 0} className="w-full flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-background bg-accent-yellow hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-surface focus:ring-accent-yellow disabled:bg-gray-500 disabled:cursor-not-allowed">
+                                <Icon path="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" className="w-5 h-5 mr-2" />
+                                Generate & Export CSV ({filteredEntries.length} entries)
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <h2 className="text-2xl font-bold text-white mb-4">Filtered Time Log</h2>
+                        <TimeLogTable entries={filteredEntries} properties={properties} />
+                    </div>
+                </div>
+            );
+        };
+        
+        const EntryForm = ({ isOpen, onClose, onCommit, currentEntry, employees, properties }) => {
+          const [entry, setEntry] = React.useState(null);
+          const [manualMode, setManualMode] = React.useState(false);
+          const clientPropertiesMap = React.useMemo(() => properties.reduce((acc, property) => { if (!acc[property.fullName]) { acc[property.fullName] = []; } acc[property.fullName].push(property); return acc; }, {}), [properties]);
+          const availableClients = Object.keys(clientPropertiesMap);
+          
+          const getInitialState = () => {
+            const firstClientFullName = availableClients.length > 0 ? availableClients[0] : '';
+            const firstClientProperties = firstClientFullName ? clientPropertiesMap[firstClientFullName] : [];
+            const firstProperty = firstClientProperties.length > 0 ? firstClientProperties[0] : { address: '', client: '' };
+            return { id: null, date: new Date().toISOString().split('T')[0], client: firstClientFullName, propertyAddress: firstProperty.address, service: 'General', employees: [], timeIn: '', timeOut: '', totalHours: '0.00' };
+          };
+
+          React.useEffect(() => {
+            if (isOpen) {
+                if (currentEntry) {
+                    const property = properties.find(p => p.address === currentEntry.propertyAddress);
+                    setEntry({...currentEntry, client: property ? property.fullName : ''});
+                    setManualMode(true); // Always manual mode for editing existing entries
+                } else {
+                    setEntry(getInitialState());
+                    setManualMode(false); // Default to timer mode for new entries
+                }
+            }
+          }, [currentEntry, isOpen, properties]);
+
+          const propertiesForSelectedClient = entry ? clientPropertiesMap[entry.client] || [] : [];
+          
+          const availableServices = React.useMemo(() => {
+              if (!entry || !entry.propertyAddress) return ['General'];
+              const property = properties.find(p => p.address === entry.propertyAddress);
+              const estimatedServices = property?.services ? Object.keys(property.services) : [];
+              const uniqueServices = [...new Set(['General', ...estimatedServices])];
+              return uniqueServices;
+          }, [entry, properties]);
+
+          React.useEffect(() => {
+              if (entry && !availableServices.includes(entry.service)) {
+                  setEntry(prev => ({ ...prev, service: availableServices[0] || 'General' }));
+              }
+          }, [availableServices, entry]);
+
+          const calculateTotalHours = (timeIn, timeOut) => {
+              if (!timeIn || !timeOut) return '0.00';
+              const start = new Date(`1970-01-01T${timeIn}:00`);
+              const end = new Date(`1970-01-01T${timeOut}:00`);
+              if (end < start) return '0.00';
+              return ( (end.getTime() - start.getTime()) / 3600000 ).toFixed(2);
+          };
+
+          const handleClientChange = (e) => {
+            const newClientFullName = e.target.value;
+            const newProperties = clientPropertiesMap[newClientFullName] || [];
+            const newProperty = newProperties.length > 0 ? newProperties[0] : { address: '', client: '' };
+            setEntry(prev => ({ ...prev, client: newClientFullName, propertyAddress: newProperty.address }));
+          };
+
+          const handleChange = (e) => {
+            const { name, value } = e.target;
+            let newEntry = { ...entry, [name]: value };
+            if (manualMode && (name === 'timeIn' || name === 'timeOut')) {
+                const newTotalHours = calculateTotalHours(name === 'timeIn' ? value : newEntry.timeIn, name === 'timeOut' ? value : newEntry.timeOut);
+                newEntry = { ...newEntry, totalHours: newTotalHours };
+            }
+            setEntry(newEntry);
+          };
+
+          const handleEmployeeChange = (employeeName) => setEntry(prev => ({...prev, employees: prev.employees.includes(employeeName) ? prev.employees.filter(name => name !== employeeName) : [...prev.employees, employeeName]}));
+          
+          const handleSubmit = (e) => { 
+              e.preventDefault(); 
+              if (entry.employees.length === 0) {
+                  alert("Please assign at least one employee.");
+                  return;
+              }
+              const commitType = currentEntry ? 'manual-save' : (manualMode ? 'manual-save' : 'start-timer');
+              onCommit(entry, commitType);
+          };
+
+          if (!isOpen || !entry) return null;
+
+          return (
+            <div className="fixed inset-0 bg-black bg-opacity-70 z-40 flex justify-center items-center p-4">
+              <div className="bg-surface border border-primary/20 rounded-lg shadow-2xl w-full max-w-2xl max-h-full overflow-y-auto">
+                <form onSubmit={handleSubmit}>
+                  <div className="p-6 sm:p-8">
+                    <h2 className="text-2xl font-bold text-white mb-6">{currentEntry ? 'Edit Time Entry' : 'Add New Job'}</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div><label htmlFor="date" className="block text-sm font-medium text-text-secondary mb-1">Date</label><input type="date" name="date" id="date" value={entry.date} onChange={handleChange} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required /></div>
+                      <div><label htmlFor="client" className="block text-sm font-medium text-text-secondary mb-1">Client</label><select name="client" id="client" value={entry.client} onChange={handleClientChange} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required>{availableClients.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
+                      <div className="md:col-span-2"><label htmlFor="propertyAddress" className="block text-sm font-medium text-text-secondary mb-1">Property Address</label>{propertiesForSelectedClient.length > 1 ? (<select name="propertyAddress" id="propertyAddress" value={entry.propertyAddress} onChange={handleChange} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required>{propertiesForSelectedClient.map(p => <option key={p.address} value={p.address}>{p.address}</option>)}</select>) : (<input type="text" name="propertyAddress" id="propertyAddress" value={entry.propertyAddress} className="p-3 block w-full rounded-md border-primary/30 bg-background/50 text-text-secondary shadow-sm" readOnly />)}</div>
+                      <div className="md:col-span-2"><label htmlFor="service" className="block text-sm font-medium text-text-secondary mb-1">Service</label><select name="service" id="service" value={entry.service} onChange={handleChange} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary">{availableServices.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
+                      <div className="md:col-span-2"><label className="block text-sm font-medium text-text-secondary mb-2">Assign Employees</label><div className="grid grid-cols-2 gap-2 p-3 bg-background rounded-md border border-primary/30">{employees.map(name => <label key={name} className="flex items-center space-x-3 cursor-pointer"><input type="checkbox" checked={entry.employees.includes(name)} onChange={() => handleEmployeeChange(name)} className="h-5 w-5 text-primary bg-surface border-primary/30 rounded focus:ring-primary" /><span className="text-text-main">{name}</span></label>)}</div></div>
+                      
+                      {!currentEntry && <div className="md:col-span-2"><label className="flex items-center"><input type="checkbox" checked={manualMode} onChange={() => setManualMode(!manualMode)} className="h-4 w-4 text-primary bg-surface border-primary/30 rounded focus:ring-primary" /><span className="ml-2 text-sm text-text-secondary">Enter time manually instead of starting a timer</span></label></div>}
+                      
+                      {manualMode && (<><div><label htmlFor="timeIn" className="block text-sm font-medium text-text-secondary mb-1">Time In</label><input type="time" name="timeIn" id="timeIn" value={entry.timeIn} onChange={handleChange} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required /></div><div><label htmlFor="timeOut" className="block text-sm font-medium text-text-secondary mb-1">Time Out</label><input type="time" name="timeOut" id="timeOut" value={entry.timeOut} onChange={handleChange} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required /></div><div className="md:col-span-2"><label className="block text-sm font-medium text-text-secondary mb-1">Total Duration</label><div className="mt-1 p-3 bg-background rounded-md border border-primary/30 text-center"><span className="text-lg font-bold text-white">{entry.totalHours}</span></div></div></>)}
+                    </div>
+                  </div>
+                  <div className="bg-background px-6 py-4 flex justify-end space-x-3 rounded-b-lg">
+                    <button type="button" onClick={onClose} className="px-4 py-2 bg-surface border border-primary/20 rounded-md shadow-sm text-sm font-medium text-text-main hover:bg-primary/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background focus:ring-primary">Cancel</button>
+                    {manualMode || currentEntry ? 
+                        <button type="submit" className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-background bg-accent-yellow hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background focus:ring-accent-yellow">Save Manual Entry</button> :
+                        <button type="submit" className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-background bg-accent-yellow hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background focus:ring-accent-yellow">Start Timer</button>
+                    }
+                  </div>
+                </form>
+              </div>
+            </div>
+          );
+        };
+        
+        const PropertyCard = ({ property, onClick }) => (
+            <button 
+                onClick={onClick}
+                className="bg-gradient-to-br from-surface to-background p-4 rounded-lg shadow-lg flex flex-col items-center justify-center text-center border border-primary/20 hover:border-primary/40 transition-all duration-300 transform hover:scale-105 hover:-translate-y-1"
+            >
+                <Icon path="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" className="w-12 h-12 text-primary mb-3" />
+                <h3 className="text-lg font-bold text-text-main truncate">{property.fullName}</h3>
+            </button>
+        );
+
+        const ProgressDashboard = ({ entries, properties }) => {
+            const [selectedAddress, setSelectedAddress] = React.useState('');
+            
+            const selectedProperty = React.useMemo(() => properties.find(p => p.address === selectedAddress), [selectedAddress, properties]);
+            
+            const progressData = React.useMemo(() => {
+                if (!selectedAddress) return { services: [], totals: { visits: 0, manHours: 0, estManHours: 0, progress: 0 } };
+                
+                const propertyEntries = entries.filter(e => e.propertyAddress === selectedAddress);
+                const estimatedHours = properties.find(p => p.address === selectedAddress)?.services || {};
+                
+                const combinedCategoryName = "Pruning + Bed Maintenance + Leaf Cleanup";
+                const servicesToCombine = ["Pruning", "Bed Maintenance", "Leaf Cleanup"];
+                
+                const services = {};
+                
+                // Initialize services object, combining estimated hours
+                Object.entries(estimatedHours).forEach(([serviceName, estHours]) => {
+                    if (servicesToCombine.includes(serviceName) || serviceName === combinedCategoryName) {
+                        if (!services[combinedCategoryName]) {
+                            services[combinedCategoryName] = { visits: 0, manHours: 0, estManHours: 0 };
+                        }
+                        services[combinedCategoryName].estManHours += estHours;
+                    } else {
+                        if (!services[serviceName]) {
+                            services[serviceName] = { visits: 0, manHours: 0, estManHours: 0 };
+                        }
+                        services[serviceName].estManHours += estHours;
+                    }
+                });
+
+                // Aggregate actual man-hours and visits from time entries
+                propertyEntries.forEach(entry => {
+                    const targetService = servicesToCombine.includes(entry.service) ? combinedCategoryName : entry.service;
+                    if (services[targetService] !== undefined) {
+                        services[targetService].visits += 1;
+                        services[targetService].manHours += parseFloat(entry.totalHours || 0) * entry.employees.length;
+                    }
+                });
+
+                const servicesArray = Object.entries(services)
+                    .map(([name, data]) => ({ 
+                        name, 
+                        ...data, 
+                        progress: (data.estManHours > 0 ? (data.manHours / data.estManHours) * 100 : 0) 
+                    }))
+                    .filter(s => s.estManHours > 0); // Only show services with estimated hours
+
+                const totals = { 
+                    visits: servicesArray.reduce((sum, s) => sum + s.visits, 0), 
+                    manHours: servicesArray.reduce((sum, s) => sum + s.manHours, 0), 
+                    estManHours: servicesArray.reduce((sum, s) => sum + s.estManHours, 0) 
+                };
+                totals.progress = (totals.estManHours > 0 ? ((totals.manHours / totals.estManHours) * 100) : 0);
+                
+                return { services: servicesArray, totals };
+            }, [selectedAddress, entries, properties]);
+
+            const sortedProperties = React.useMemo(() => [...properties].sort((a, b) => a.fullName.localeCompare(b.fullName)), [properties]);
+
+            if (properties.length === 0) return (<div className="text-center py-16 bg-surface rounded-lg shadow-lg border-primary/20"><Icon path="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" className="mx-auto h-12 w-12 text-text-secondary" /><h3 className="mt-2 text-lg font-medium text-text-main">No Properties Found</h3><p className="mt-1 text-sm text-text-secondary">Please add a property in the Admin panel to see progress.</p></div>);
+            
+            return (
+                <div className="space-y-6">
+                    {!selectedAddress ? (
+                        <>
+                            <h1 className="text-3xl font-bold text-white">Select a Property</h1>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                {sortedProperties.map(prop => (
+                                    <PropertyCard key={prop.id} property={prop} onClick={() => setSelectedAddress(prop.address)} />
+                                ))}
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <div className="flex justify-between items-center">
+                                <h1 className="text-3xl font-bold text-white">{selectedProperty?.fullName}</h1>
+                                <button onClick={() => setSelectedAddress('')} className="flex items-center space-x-2 text-sm font-medium text-accent-yellow hover:text-opacity-80">
+                                    <Icon path="M11.25 9l-3 3m0 0l3 3m-3-3h7.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" className="w-5 h-5" />
+                                    <span>Back to All Properties</span>
+                                </button>
+                            </div>
+                            <ServiceCardsGrid entries={entries} properties={properties} selectedAddress={selectedAddress} />
+                            <div className="bg-surface shadow-lg rounded-lg p-4 sm:p-6 border border-primary/20">
+                                <div className="overflow-x-auto">
+                                    <table className="min-w-full divide-y divide-primary/20 responsive-table">
+                                        <thead className="bg-background/50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-text-secondary uppercase tracking-wider">Service</th><th className="px-6 py-3 text-center text-xs font-medium text-text-secondary uppercase tracking-wider">Visits</th><th className="px-6 py-3 text-center text-xs font-medium text-text-secondary uppercase tracking-wider">Man Hours</th><th className="px-6 py-3 text-center text-xs font-medium text-text-secondary uppercase tracking-wider">Est. Man Hours</th><th className="px-6 py-3 text-center text-xs font-medium text-text-secondary uppercase tracking-wider" style={{width: '20%'}}>Progress</th></tr></thead>
+                                        <tbody className="bg-surface divide-y divide-primary/20 md:divide-y-0">{progressData.services.map(service => (<tr key={service.name}><td data-label="Service" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm font-medium text-text-main">{service.name}</td><td data-label="Visits" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{service.visits}</td><td data-label="Man Hours" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{service.manHours.toFixed(2)}</td><td data-label="Est. Man Hours" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary">{service.estManHours}</td><td data-label="Progress" className="px-6 py-2 md:py-4 whitespace-nowrap text-sm text-text-secondary"><div className="flex items-center justify-end md:justify-start"><div className="w-full"><ProgressBar progress={service.progress} /></div><span className="font-semibold w-16 text-right ml-2 text-text-main">{service.progress.toFixed(0)}%</span></div></td></tr>))}</tbody>
+                                        <tfoot className="bg-background/50"><tr><th data-label="Total" className="px-6 py-2 md:py-4 text-sm font-bold text-white uppercase">Total</th><td data-label="Total Visits" className="px-6 py-2 md:py-4 text-sm font-bold text-white">{progressData.totals.visits}</td><td data-label="Total Man Hours" className="px-6 py-2 md:py-4 text-sm font-bold text-white">{progressData.totals.manHours?.toFixed(2)}</td><td data-label="Total Est. Hours" className="px-6 py-2 md:py-4 text-sm font-bold text-white">{progressData.totals.estManHours}</td><td data-label="Total Progress" className="px-6 py-2 md:py-4 text-sm font-bold text-white"><div className="flex items-center justify-end md:justify-start"><div className="w-full"><ProgressBar progress={progressData.totals.progress} /></div><span className="font-semibold w-16 text-right ml-2">{progressData.totals.progress.toFixed(0)}%</span></div></td></tr></tfoot>
+                                    </table>
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+            );
+        };
+        
+        const ServiceManagerModal = ({ isOpen, onClose, propertyAddress, services, onSave, onDelete }) => {
+            const [localServices, setLocalServices] = React.useState({});
+            const [newServiceName, setNewServiceName] = React.useState('');
+            const [newServiceHours, setNewServiceHours] = React.useState('');
+            React.useEffect(() => { setLocalServices(services || {}); }, [services]);
+            const handleHourChange = (serviceName, hours) => setLocalServices(prev => ({ ...prev, [serviceName]: parseInt(hours, 10) || 0 }));
+            const handleAddNewService = () => { if (newServiceName && newServiceHours) { onSave(newServiceName, parseInt(newServiceHours, 10)); setNewServiceName(''); setNewServiceHours(''); } };
+            const handleSaveAll = () => { Object.entries(localServices).forEach(([name, hours]) => onSave(name, hours)); onClose(); };
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-70 z-40 flex justify-center items-center p-4">
+                    <div className="bg-surface border border-primary/20 rounded-lg shadow-2xl w-full max-w-lg">
+                        <div className="p-6">
+                            <h2 className="text-xl font-bold text-white">Manage Services for:</h2><p className="text-md text-text-secondary mb-6">{propertyAddress}</p>
+                            <div className="space-y-4 max-h-64 overflow-y-auto pr-2">{Object.entries(localServices).map(([name, hours]) => (<div key={name} className="flex items-center space-x-3"><input type="text" value={name} readOnly className="p-3 flex-grow block w-full rounded-md border-primary/30 bg-background text-text-main shadow-sm" /><input type="number" value={hours} onChange={(e) => handleHourChange(name, e.target.value)} className="p-3 w-24 block rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /><button onClick={() => onDelete(name)} className="text-accent-brown hover:text-opacity-80 p-1 rounded-full hover:bg-background"><Icon path="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" className="w-5 h-5"/></button></div>))}</div>
+                            <div className="mt-6 pt-4 border-t border-primary/20"><h3 className="text-lg font-semibold text-text-main mb-2">Add New Service</h3><div className="flex items-center space-x-3"><input type="text" placeholder="Service Name" value={newServiceName} onChange={e => setNewServiceName(e.target.value)} className="p-3 flex-grow block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /><input type="number" placeholder="Est. Hours" value={newServiceHours} onChange={e => setNewServiceHours(e.target.value)} className="p-3 w-24 block rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /><button onClick={handleAddNewService} className="px-3 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-dark">Add</button></div></div>
+                        </div>
+                        <div className="bg-background px-6 py-4 flex justify-end space-x-3 rounded-b-lg"><button type="button" onClick={onClose} className="px-4 py-2 bg-surface border border-primary/20 rounded-md shadow-sm text-sm font-medium text-text-main hover:bg-primary/20">Cancel</button><button type="button" onClick={handleSaveAll} className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-accent-yellow hover:bg-opacity-90">Save Changes</button></div>
+                    </div>
+                </div>
+            );
+        };
+        
+        const AdminDashboard = ({ properties, employees, onPropertySave, onPropertyDelete, onEmployeeAdd, onEmployeeDelete }) => {
+            const [newClient, setNewClient] = React.useState('');
+            const [newAddress, setNewAddress] = React.useState('');
+            const [managingProperty, setManagingProperty] = React.useState(null);
+            const [newEmployeeName, setNewEmployeeName] = React.useState('');
+            const handleAddProperty = (e) => {
+                e.preventDefault();
+                if (newAddress && newClient && !properties.find(p => p.address === newAddress)) {
+                    onPropertySave({ fullName: newClient, address: newAddress, services: {} });
+                    setNewClient(''); setNewAddress('');
+                } else if (properties.find(p => p.address === newAddress)) { alert('A property with this address already exists.'); }
+            };
+            const handleSaveService = (propertyAddress, serviceName, hours) => {
+                const prop = properties.find(p => p.address === propertyAddress);
+                const updatedServices = { ...prop.services, [serviceName]: hours };
+                onPropertySave({ ...prop, services: updatedServices });
+            };
+            const handleDeleteService = (propertyAddress, serviceName) => {
+                const prop = properties.find(p => p.address === propertyAddress);
+                const newServices = { ...prop.services };
+                delete newServices[serviceName];
+                onPropertySave({ ...prop, services: newServices });
+            };
+            const handleAddEmployee = (e) => {
+                e.preventDefault();
+                if (newEmployeeName && !employees.includes(newEmployeeName)) { onEmployeeAdd(newEmployeeName); setNewEmployeeName(''); }
+            };
+            return (
+                <>
+                    <h1 className="text-3xl font-bold text-white mb-8">Admin Dashboard</h1>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <div className="space-y-8">
+                            <div className="bg-surface shadow-lg rounded-lg p-6 border border-primary/20"><h2 className="text-xl font-bold text-white mb-4">Add New Property</h2><form onSubmit={handleAddProperty} className="space-y-4"><div><label htmlFor="newClient" className="block text-sm font-medium text-text-secondary mb-1">Client Name</label><input type="text" id="newClient" value={newClient} onChange={e => setNewClient(e.target.value)} placeholder="e.g., Downtown Corp" className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required /></div><div><label htmlFor="newAddress" className="block text-sm font-medium text-text-secondary mb-1">Property Address</label><input type="text" id="newAddress" value={newAddress} onChange={e => setNewAddress(e.target.value)} placeholder="e.g., 555 Central Ave" className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required /></div><button type="submit" className="w-full justify-center px-4 py-3 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-primary hover:bg-primary-dark">Add Property</button></form></div>
+                            <div className="bg-surface shadow-lg rounded-lg p-6 border border-primary/20"><h2 className="text-xl font-bold text-white mb-4">Manage Employees</h2><form onSubmit={handleAddEmployee} className="flex items-center gap-4 mb-4"><input type="text" value={newEmployeeName} onChange={e => setNewEmployeeName(e.target.value)} placeholder="New employee name" className="p-3 flex-grow mt-1 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" required /><button type="submit" className="px-4 py-3 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-primary hover:bg-primary-dark">Add</button></form><div className="space-y-2">{employees.map(name => (<div key={name} className="flex justify-between items-center p-3 bg-background rounded-lg"><p className="text-text-main">{name}</p><button onClick={() => onEmployeeDelete(name)} className="p-1 rounded-full text-accent-brown hover:bg-surface"><Icon path="M6 18L18 6M6 6l12 12" className="w-4 h-4"/></button></div>))}</div></div>
+                        </div>
+                        <div className="bg-surface shadow-lg rounded-lg p-6 border border-primary/20">
+                            <h2 className="text-xl font-bold text-white mb-4">Manage Properties & Services</h2>
+                            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
+                                {properties.map(p => (<div key={p.id} className="flex justify-between items-center p-3 bg-background rounded-lg"><div><p className="font-semibold text-white">{p.fullName}</p><p className="text-sm text-text-secondary">{p.address}</p></div><div className="flex items-center space-x-3"><button onClick={() => setManagingProperty(p.address)} className="px-3 py-1 text-sm font-medium rounded-md text-white bg-accent-yellow hover:bg-opacity-90">Manage Services</button><button onClick={() => onPropertyDelete(p.address)} className="p-2 rounded-full text-accent-brown hover:bg-background"><Icon path="M6 18L18 6M6 6l12 12" className="w-5 h-5"/></button></div></div>))}
+                                {properties.length === 0 && <p className="text-text-secondary">No properties added yet.</p>}
+                            </div>
+                        </div>
+                        {managingProperty && (<ServiceManagerModal isOpen={!!managingProperty} onClose={() => setManagingProperty(null)} propertyAddress={managingProperty} services={properties.find(p => p.address === managingProperty)?.services} onSave={(serviceName, hours) => handleSaveService(managingProperty, serviceName, hours)} onDelete={(serviceName) => handleDeleteService(managingProperty, serviceName)} />)}
+                    </div>
+                </>
+            );
+        };
+        
+        const TimersView = ({ timers, onStop, properties }) => {
+            return (
+                <div>
+                    <h1 className="text-3xl font-bold text-white mb-6">Active Timers</h1>
+                    {timers && timers.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                            {timers.map(timer => (
+                                <TimerCard key={timer.id} timer={timer} onStop={onStop} properties={properties} />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="text-center py-16 bg-surface rounded-lg shadow-lg border-primary/20">
+                            <Icon path="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" className="mx-auto h-12 w-12 text-text-secondary" />
+                            <h3 className="mt-2 text-lg font-medium text-text-main">No active timers</h3>
+                            <p className="mt-1 text-sm text-text-secondary">Click the plus button to start a new job.</p>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // --- Main App Component ---
+        function App() {
+          const [employees, setEmployees] = React.useState([]);
+          const [entries, setEntries] = React.useState([]);
+          const [properties, setProperties] = React.useState([]);
+          const [isFormOpen, setIsFormOpen] = React.useState(false);
+          const [currentEntry, setCurrentEntry] = React.useState(null);
+          const [view, setView] = React.useState('progress');
+          const [activeTimers, setActiveTimers] = React.useState([]);
+          
+          const fetchData = async () => {
+            try {
+              const response = await fetch(`${API_BASE_URL}/data`);
+              if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+              const data = await response.json();
+              setEmployees(data.employees || []);
+              setEntries(data.entries.sort((a, b) => new Date(b.date) - new Date(a.date) || b.id - a.id) || []);
+              setProperties(data.properties || []);
+              setActiveTimers(data.activeTimers || []);
+            } catch (error) { console.error("Failed to fetch data:", error); }
+          };
+          React.useEffect(() => { fetchData(); }, []);
+
+          const handleAddNew = () => { setCurrentEntry(null); setIsFormOpen(true); };
+          const handleEdit = (entry) => { setCurrentEntry(entry); setIsFormOpen(true); };
+          const handleDelete = async (id) => { 
+              await fetch(`${API_BASE_URL}/entries/${id}`, { method: 'DELETE' }); 
+              fetchData(); 
+          };
+          
+          const handleSaveEntry = async (entryToSave) => {
+            const url = entryToSave.id ? `${API_BASE_URL}/entries/${entryToSave.id}` : `${API_BASE_URL}/entries`;
+            const method = entryToSave.id ? 'PUT' : 'POST';
+            await fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entryToSave) });
+            fetchData();
+          };
+
+          const handleFormCommit = async (entryData, commitType) => {
+            if (commitType === 'start-timer') {
+                const timerData = {
+                    startTime: new Date().toISOString(),
+                    ...entryData
+                };
+                const response = await fetch(`${API_BASE_URL}/timers`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(timerData),
+                });
+                const newTimer = await response.json();
+                setActiveTimers(prev => [...prev, newTimer]);
+            } else { // 'manual-save'
+                handleSaveEntry(entryData);
+            }
+            setIsFormOpen(false);
+            setCurrentEntry(null);
+          };
+
+          const handleStopTimer = async (timerId) => {
+              const timerToStop = activeTimers.find(t => t.id === timerId);
+              if (!timerToStop) return;
+
+              await fetch(`${API_BASE_URL}/timers/${timerId}`, { method: 'DELETE' });
+
+              const startTime = new Date(timerToStop.startTime);
+              const endTime = new Date();
+              
+              const totalHours = ((endTime - startTime) / 3600000).toFixed(2);
+              
+              const finalEntry = {
+                  ...timerToStop,
+                  id: null, 
+                  timeIn: startTime.toTimeString().slice(0, 5),
+                  timeOut: endTime.toTimeString().slice(0, 5),
+                  totalHours: totalHours,
+              };
+              
+              handleSaveEntry(finalEntry);
+              setActiveTimers(prev => prev.filter(t => t.id !== timerId));
+          };
+
+          const handlePropertySave = async (propertyToSave) => {
+              const url = propertyToSave.id ? `${API_BASE_URL}/properties/${propertyToSave.id}` : `${API_BASE_URL}/properties`;
+              const method = propertyToSave.id ? 'PUT' : 'POST';
+              await fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(propertyToSave) });
+              fetchData();
+          };
+          const handlePropertyDelete = async (address) => { 
+              await fetch(`${API_BASE_URL}/properties/${address}`, { method: 'DELETE' }); 
+              fetchData(); 
+          };
+          const handleEmployeeAdd = async (employeeName) => { 
+              await fetch(`${API_BASE_URL}/employees`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: employeeName }) }); 
+              fetchData(); 
+          };
+          const handleEmployeeDelete = async (employeeName) => { 
+              await fetch(`${API_BASE_URL}/employees/${employeeName}`, { method: 'DELETE' }); 
+              fetchData(); 
+          };
+
+          return (
+            <div className="bg-background min-h-screen font-sans text-text-main">
+              <Header onAddNew={handleAddNew} view={view} setView={setView} activeTimerCount={activeTimers.length} />
+              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                
+                {view === 'timers' && <TimersView timers={activeTimers} onStop={handleStopTimer} properties={properties} />}
+                {view === 'log' && <TimeLogView entries={entries} onEdit={handleEdit} onDelete={handleDelete} properties={properties} />}
+                {view === 'progress' && <ProgressDashboard entries={entries} properties={properties} />}
+                {view === 'reporting' && <ReportingView entries={entries} properties={properties} employees={employees} />}
+                {view === 'admin' && <AdminDashboard properties={properties} employees={employees} onPropertySave={handlePropertySave} onPropertyDelete={handlePropertyDelete} onEmployeeAdd={handleEmployeeAdd} onEmployeeDelete={handleEmployeeDelete} />}
+              </main>
+              <EntryForm isOpen={isFormOpen} onClose={() => setIsFormOpen(false)} onCommit={handleFormCommit} currentEntry={currentEntry} employees={employees} properties={properties} />
+            </div>
+          );
+        }
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
