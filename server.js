@@ -1,30 +1,20 @@
 const express = require('express');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
 
 // --- Setup ---
 const dbPath = path.join(__dirname, 'database.db');
-console.log('Attempting to connect to database at:', dbPath); // <-- ADD THIS LINE
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Error connecting to SQLite database:', err.message);
-  } else {
-    console.log('✅ Connected to the SQLite database.');
-    // Enable foreign key support
-    db.run("PRAGMA foreign_keys = ON;");
-  }
-});
+const db = new Database(dbPath, { verbose: console.log });
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-// Serve static files from the 'public' directory
-// app.use(express.static('public'));
 
-// Serve the index.html file for the root URL
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
@@ -44,50 +34,27 @@ const createBackup = async () => {
     console.error('❌ Failed to create backup:', error);
   }
 };
-
-// Schedule daily backups
 setInterval(createBackup, 24 * 60 * 60 * 1000);
 
-// --- Helper Functions ---
-// Helper to run multiple queries and get all results
-const runPromiseAll = (queries) => {
-  return Promise.all(queries.map(q =>
-    new Promise((resolve, reject) => {
-      db.all(q.sql, q.params || [], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    })
-  ));
-};
 
 // --- API Endpoints ---
-
-// -- GET all data --
-app.get('/api/data', async (req, res) => {
+app.get('/api/data', (req, res) => {
   try {
-    const queries = [
-      { sql: "SELECT * FROM entries ORDER BY date DESC, id DESC" },
-      { sql: "SELECT * FROM properties" },
-      { sql: "SELECT name FROM employees ORDER BY name" },
-      { sql: "SELECT * FROM entry_employees" },
-      { sql: "SELECT * FROM activeTimers" } // Also get active timers
-    ];
+    const entries = db.prepare("SELECT * FROM entries ORDER BY date DESC, id DESC").all();
+    const properties = db.prepare("SELECT * FROM properties").all();
+    const employees = db.prepare("SELECT name FROM employees ORDER BY name").all();
+    const entry_employees = db.prepare("SELECT * FROM entry_employees").all();
+    const activeTimers = db.prepare("SELECT * FROM activeTimers").all();
 
-    const [entries, properties, employees, entry_employees, activeTimers] = await runPromiseAll(queries);
-
-    // Stitch the employee names back onto the entries
-    const entriesWithEmployees = entries.map(entry => {
-      const relatedEmployees = entry_employees
-        .filter(link => link.entry_id === entry.id)
-        .map(link => link.employee_name);
-      return { ...entry, employees: relatedEmployees };
-    });
+    const entriesWithEmployees = entries.map(entry => ({
+      ...entry,
+      employees: entry_employees.filter(link => link.entry_id === entry.id).map(link => link.employee_name)
+    }));
     
-    // Stitch employees onto active timers as well
-    const timersWithEmployees = activeTimers.map(timer => {
-        return {...timer, employees: JSON.parse(timer.employees) };
-    });
+    const timersWithEmployees = activeTimers.map(timer => ({
+        ...timer, 
+        employees: JSON.parse(timer.employees) 
+    }));
 
     res.json({
       entries: entriesWithEmployees,
@@ -101,161 +68,146 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
-// -- ENTRIES --
+// Entries
 app.post('/api/entries', (req, res) => {
-  const { date, client, propertyAddress, service, employees, timeIn, timeOut, totalHours } = req.body;
-  const sql = `INSERT INTO entries (date, client, propertyAddress, service, timeIn, timeOut, totalHours) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    const { date, client, propertyAddress, service, employees, timeIn, timeOut, totalHours } = req.body;
+    try {
+        const insertEntry = db.prepare(`INSERT INTO entries (date, client, propertyAddress, service, timeIn, timeOut, totalHours) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+        const insertEmployeeLink = db.prepare("INSERT INTO entry_employees (entry_id, employee_name) VALUES (?, ?)");
 
-  db.run(sql, [date, client, propertyAddress, service, timeIn, timeOut, totalHours], function (err) {
-    if (err) {
-      console.error(err.message);
-      return res.status(500).json({ error: err.message });
+        const result = db.transaction(() => {
+            const info = insertEntry.run(date, client, propertyAddress, service, timeIn, timeOut, totalHours);
+            for (const employee of employees) {
+                insertEmployeeLink.run(info.lastInsertRowid, employee);
+            }
+            return info;
+        })();
+        
+        res.status(201).json({ id: result.lastInsertRowid, ...req.body });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: err.message });
     }
-    const entryId = this.lastID;
-    const stmt = db.prepare("INSERT INTO entry_employees (entry_id, employee_name) VALUES (?, ?)");
-    for (const employee of employees) {
-      stmt.run(entryId, employee);
-    }
-    stmt.finalize((err) => {
-        if (err) {
-            console.error(err.message);
-            return res.status(500).json({ error: err.message });
-        }
-        res.status(201).json({ id: entryId, ...req.body });
-    });
-  });
 });
 
 app.put('/api/entries/:id', (req, res) => {
   const entryId = parseInt(req.params.id);
   const { date, client, propertyAddress, service, employees, timeIn, timeOut, totalHours } = req.body;
-  const sql = `UPDATE entries SET date = ?, client = ?, propertyAddress = ?, service = ?, timeIn = ?, timeOut = ?, totalHours = ? WHERE id = ?`;
+  
+  try {
+    const updateEntry = db.prepare(`UPDATE entries SET date = ?, client = ?, propertyAddress = ?, service = ?, timeIn = ?, timeOut = ?, totalHours = ? WHERE id = ?`);
+    const deleteEmployeeLinks = db.prepare('DELETE FROM entry_employees WHERE entry_id = ?');
+    const insertEmployeeLink = db.prepare("INSERT INTO entry_employees (entry_id, employee_name) VALUES (?, ?)");
 
-  db.serialize(() => {
-    db.run('BEGIN TRANSACTION;');
-    db.run(sql, [date, client, propertyAddress, service, timeIn, timeOut, totalHours, entryId]);
-    db.run('DELETE FROM entry_employees WHERE entry_id = ?', [entryId]);
-    const stmt = db.prepare("INSERT INTO entry_employees (entry_id, employee_name) VALUES (?, ?)");
-    for (const employee of employees) {
-      stmt.run(entryId, employee);
-    }
-    stmt.finalize();
-    db.run('COMMIT;', (err) => {
-        if(err) {
-            console.error(err.message);
-            return res.status(500).json({ error: err.message });
+    db.transaction(() => {
+        updateEntry.run(date, client, propertyAddress, service, timeIn, timeOut, totalHours, entryId);
+        deleteEmployeeLinks.run(entryId);
+        for (const employee of employees) {
+            insertEmployeeLink.run(entryId, employee);
         }
-        res.json(req.body);
-    });
-  });
+    })();
+    
+    res.json(req.body);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/entries/:id', (req, res) => {
-  const entryId = parseInt(req.params.id);
-  db.serialize(() => {
-      db.run('DELETE FROM entry_employees WHERE entry_id = ?', [entryId]);
-      db.run('DELETE FROM entries WHERE id = ?', [entryId], (err) => {
-        if (err) {
-            console.error(err.message);
-            return res.status(500).json({ error: err.message });
-        }
+    try {
+        db.transaction(() => {
+            db.prepare('DELETE FROM entry_employees WHERE entry_id = ?').run(req.params.id);
+            db.prepare('DELETE FROM entries WHERE id = ?').run(req.params.id);
+        })();
         res.status(204).send();
-      });
-  });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
-
-// -- PROPERTIES --
+// Properties
 app.post('/api/properties', (req, res) => {
   const { fullName, address, services } = req.body;
-  const sql = `INSERT INTO properties (fullName, address, services) VALUES (?, ?, ?)`;
-  db.run(sql, [fullName, address, JSON.stringify(services)], function(err) {
-    if(err) {
-        console.error(err.message);
-        return res.status(500).json({ error: err.message });
-    }
-    res.status(201).json({ id: this.lastID, ...req.body });
-  });
+  try {
+    const info = db.prepare(`INSERT INTO properties (fullName, address, services) VALUES (?, ?, ?)`).run(fullName, address, JSON.stringify(services));
+    res.status(201).json({ id: info.lastInsertRowid, ...req.body });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/properties/:id', (req, res) => {
-  const propId = parseInt(req.params.id);
   const { fullName, address, services } = req.body;
-  const sql = `UPDATE properties SET fullName = ?, address = ?, services = ? WHERE id = ?`;
-  db.run(sql, [fullName, address, JSON.stringify(services), propId], function(err) {
-    if(err) {
-        console.error(err.message);
-        return res.status(500).json({ error: err.message });
-    }
+  try {
+    db.prepare(`UPDATE properties SET fullName = ?, address = ?, services = ? WHERE id = ?`).run(fullName, address, JSON.stringify(services), req.params.id);
     res.json(req.body);
-  });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/properties/:address', (req, res) => {
-  const propAddress = req.params.address;
-  db.serialize(() => {
-    // Also delete associated time entries
-    db.run('DELETE FROM entries WHERE propertyAddress = ?', [propAddress]);
-    db.run('DELETE FROM properties WHERE address = ?', [propAddress], (err) => {
-        if(err) {
-            console.error(err.message);
-            return res.status(500).json({ error: err.message });
-        }
+    try {
+        db.transaction(() => {
+            db.prepare('DELETE FROM entries WHERE propertyAddress = ?').run(req.params.address);
+            db.prepare('DELETE FROM properties WHERE address = ?').run(req.params.address);
+        })();
         res.status(204).send();
-    });
-  });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// -- EMPLOYEES --
+// Employees
 app.post('/api/employees', (req, res) => {
-  const { name } = req.body;
-  db.run('INSERT OR IGNORE INTO employees (name) VALUES (?)', [name], function(err) {
-    if(err) {
-        console.error(err.message);
-        return res.status(500).json({ error: err.message });
-    }
-    res.status(201).json({ name });
-  });
+  try {
+    db.prepare('INSERT OR IGNORE INTO employees (name) VALUES (?)').run(req.body.name);
+    res.status(201).json({ name: req.body.name });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/employees/:name', (req, res) => {
-  const employeeName = req.params.name;
-  db.run('DELETE FROM employees WHERE name = ?', [employeeName], function(err) {
-    if(err) {
+    try {
+        db.transaction(() => {
+            db.prepare('DELETE FROM employees WHERE name = ?').run(req.params.name);
+            db.prepare('DELETE FROM entry_employees WHERE employee_name = ?').run(req.params.name);
+        })();
+        res.status(204).send();
+    } catch (err) {
         console.error(err.message);
-        return res.status(500).json({ error: err.message });
+        res.status(500).json({ error: err.message });
     }
-    // Also remove them from any entries
-    db.run('DELETE FROM entry_employees WHERE employee_name = ?', [employeeName]);
-    res.status(204).send();
-  });
 });
 
-
-// --- ACTIVE TIMERS ENDPOINTS --- (Using a separate table for simplicity)
+// Active Timers
 app.post('/api/timers', (req, res) => {
     const id = uuidv4();
     const { startTime, date, client, propertyAddress, service, employees } = req.body;
-    // Store employees array as a JSON string in the database
-    const sql = `INSERT INTO activeTimers (id, startTime, date, client, propertyAddress, service, employees) VALUES (?, ?, ?, ?, ?, ?, ?)`;
-    db.run(sql, [id, startTime, date, client, propertyAddress, service, JSON.stringify(employees)], function(err) {
-        if(err) {
-            console.error(err.message);
-            return res.status(500).json({ error: err.message });
-        }
+    try {
+        db.prepare(`INSERT INTO activeTimers (id, startTime, date, client, propertyAddress, service, employees) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, startTime, date, client, propertyAddress, service, JSON.stringify(employees));
         res.status(201).json({ id, ...req.body });
-    });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.delete('/api/timers/:id', (req, res) => {
-    const timerId = req.params.id;
-    db.run('DELETE FROM activeTimers WHERE id = ?', [timerId], function(err) {
-        if(err) {
-            console.error(err.message);
-            return res.status(500).json({ error: err.message });
-        }
+    try {
+        db.prepare('DELETE FROM activeTimers WHERE id = ?').run(req.params.id);
         res.status(204).send();
-    });
+    } catch(err) {
+        console.error(err.message);
+        return res.status(500).json({ error: err.message });
+    }
 });
 
 
