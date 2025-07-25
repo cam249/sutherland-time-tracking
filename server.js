@@ -42,7 +42,8 @@ app.get('/api/data', (req, res) => {
   try {
     const entries = db.prepare("SELECT * FROM entries ORDER BY date DESC, id DESC").all();
     const properties = db.prepare("SELECT * FROM properties").all();
-    const employees = db.prepare("SELECT name FROM employees ORDER BY name").all();
+    // MODIFICATION: Fetch all employee data, not just names
+    const employees = db.prepare("SELECT * FROM employees ORDER BY name").all();
     const entry_employees = db.prepare("SELECT * FROM entry_employees").all();
     const activeTimers = db.prepare("SELECT * FROM activeTimers").all();
 
@@ -59,7 +60,8 @@ app.get('/api/data', (req, res) => {
     res.json({
       entries: entriesWithEmployees,
       properties: properties.map(p => ({ ...p, services: JSON.parse(p.services || '{}') })),
-      employees: employees.map(e => e.name),
+      // MODIFICATION: Send full employee objects to the client
+      employees: employees,
       activeTimers: timersWithEmployees
     });
   } catch (err) {
@@ -166,8 +168,27 @@ app.delete('/api/properties/:address', (req, res) => {
 // Employees
 app.post('/api/employees', (req, res) => {
   try {
+    // Note: This assumes new employees are added with only a name. Phone/email can be added via edit.
     db.prepare('INSERT OR IGNORE INTO employees (name) VALUES (?)').run(req.body.name);
     res.status(201).json({ name: req.body.name });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// MODIFICATION: New endpoint to update employee details
+app.put('/api/employees/:name', (req, res) => {
+  const { phone, email } = req.body;
+  const originalName = req.params.name;
+
+  try {
+    // This assumes the employee's name is the primary key and is not being changed.
+    db.prepare('UPDATE employees SET phone = ?, email = ? WHERE name = ?')
+      .run(phone, email, originalName);
+    
+    const updatedEmployee = db.prepare('SELECT * FROM employees WHERE name = ?').get(originalName);
+    res.json(updatedEmployee);
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: err.message });
@@ -178,6 +199,8 @@ app.delete('/api/employees/:name', (req, res) => {
     try {
         db.transaction(() => {
             db.prepare('DELETE FROM employees WHERE name = ?').run(req.params.name);
+            // This will cascade delete from entry_employees if foreign keys are set up correctly.
+            // Adding an explicit delete for safety.
             db.prepare('DELETE FROM entry_employees WHERE employee_name = ?').run(req.params.name);
         })();
         res.status(204).send();
