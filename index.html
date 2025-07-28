@@ -77,12 +77,18 @@
 
     <script type="text/babel">
 
-        const API_BASE_URL = 'http://localhost:3001/api';
+        // --- const API_BASE_URL = 'http://localhost:3001/api'; ---
+        // --- const API_BASE_URL = 'http://35.91.120.252:3001/api'; ---
+
+        const API_BASE_URL = 'http://35.91.120.252:3001/api';
         
         const themes = {
           default: { 'primary': '109 151 115', 'primary-dark': '90 127 96', 'background': '12 59 46', 'surface': '26 76 63', 'surface-progress': '180 102 23', 'accent-brown': '180 102 23', 'accent-yellow': '255 186 0', 'text-main': '240 253 244', 'text-secondary': '163 179 167' },
-          light: { 'primary': '52 116 60', 'primary-dark': '42 96 49', 'background': '240 253 244', 'surface': '255 255 255', 'surface-progress': '235 245 235', 'accent-brown': '180 102 23', 'accent-yellow': '212 157 0', 'text-main': '12 59 46', 'text-secondary': '90 127 96' },
-          ocean: { 'primary': '86 142 163', 'primary-dark': '67 112 129', 'background': '10 37 64', 'surface': '17 53 90', 'surface-progress': '13 44 74', 'accent-brown': '180 102 23', 'accent-yellow': '255 186 0', 'text-main': '224 247 250', 'text-secondary': '130 160 185' }
+          turtle: { 'primary': '57 174 169', 'primary-dark': '47, 144, 140', 'background': '85 123 131', 'surface': '65, 103, 111', 'surface-progress': '57 174 169', 'accent-brown': '162 213 171', 'accent-yellow': '229 239 193', 'text-main': '229 239 193', 'text-secondary': '162 213 171' },
+          strawberry: { 'primary': '221 68 112', 'primary-dark': '191, 58, 92', 'background': '255 250 245', 'surface': '255 255 255', 'surface-progress': '254 114 169', 'accent-brown': '221 68 112', 'accent-yellow': '198 223 118', 'text-main': '221 68 112', 'text-secondary': '254 114 169' },
+          amphibian: { 'primary': '21 205 202', 'primary-dark': '18, 175, 172', 'background': '62 84 211', 'surface': '79 128 226', 'surface-progress': '79 128 226', 'accent-brown': '21 205 202', 'accent-yellow': '79 224 182', 'text-main': '240 253 244', 'text-secondary': '79 224 182' },
+          kiwi: { 'primary': '146 222 139', 'primary-dark': '126, 192, 119', 'background': '2 129 116', 'surface': '10 182 139', 'surface-progress': '10 182 139', 'accent-brown': '10 182 139', 'accent-yellow': '255 227 179', 'text-main': '255 227 179', 'text-secondary': '146 222 139' },
+          candle: { 'primary': '251 140 111', 'primary-dark': '221, 120, 91', 'background': '115 96 125', 'surface': '95, 76, 105', 'surface-progress': '193 185 174', 'accent-brown': '251 140 111', 'accent-yellow': '253 198 100', 'text-main': '253 198 100', 'text-secondary': '193 185 174' }
         };
 
         // --- Helper Components ---
@@ -98,16 +104,19 @@
         
         const ThemeSwitcher = ({ theme, setTheme }) => {
           const themeOptions = [
-            { name: 'default', color: 'rgb(109, 151, 115)' },
-            { name: 'light', color: 'rgb(240, 253, 244)' },
-            { name: 'ocean', color: 'rgb(86, 142, 163)' }
+            { name: 'default', label: 'Default', color: 'rgb(109, 151, 115)' },
+            { name: 'turtle', label: 'Turtle', color: 'rgb(85, 123, 131)' },
+            { name: 'strawberry', label: 'Strawberry', color: 'rgb(221, 68, 112)' },
+            { name: 'amphibian', label: 'Amphibian', color: 'rgb(62, 84, 211)' },
+            { name: 'kiwi', label: 'Kiwi', color: 'rgb(2, 129, 116)' },
+            { name: 'candle', label: 'Candle', color: 'rgb(115, 96, 125)' }
           ];
           return (
             <div className="flex items-center space-x-2 mr-4">
               {themeOptions.map(opt => (
                 <button
                   key={opt.name}
-                  title={`${opt.name.charAt(0).toUpperCase() + opt.name.slice(1)} Theme`}
+                  title={opt.label}
                   onClick={() => setTheme(opt.name)}
                   className={`w-5 h-5 rounded-full transition-all border border-text-secondary/20 ${theme === opt.name ? 'ring-2 ring-offset-2 ring-offset-surface ring-accent-yellow' : 'hover:ring-1 hover:ring-text-secondary'}`}
                   style={{ backgroundColor: opt.color }}
@@ -451,36 +460,17 @@
             );
         };
         
-        // MODIFICATION: New component for editing employee details
         const EmployeeEditModal = ({ isOpen, onClose, employee, onSave }) => {
             const [phone, setPhone] = React.useState('');
             const [email, setEmail] = React.useState('');
-
-            React.useEffect(() => {
-                if (employee) {
-                    setPhone(employee.phone || '');
-                    setEmail(employee.email || '');
-                }
-            }, [employee]);
-
+            React.useEffect(() => { if (employee) { setPhone(employee.phone || ''); setEmail(employee.email || ''); } }, [employee]);
             if (!isOpen || !employee) return null;
-
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                onSave({ ...employee, phone, email });
-            };
-
+            const handleSubmit = (e) => { e.preventDefault(); onSave({ ...employee, phone, email }); };
             return (
                 <div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4">
                     <div className="bg-surface border border-primary/20 rounded-lg shadow-2xl w-full max-w-lg">
                         <form onSubmit={handleSubmit}>
-                            <div className="p-6">
-                                <h2 className="text-xl font-bold text-text-main mb-6">Edit Employee: {employee.name}</h2>
-                                <div className="space-y-4">
-                                    <div><label htmlFor="editPhone" className="block text-sm font-medium text-text-secondary mb-1">Phone Number</label><input type="tel" id="editPhone" value={phone} onChange={e => setPhone(e.target.value)} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /></div>
-                                    <div><label htmlFor="editEmail" className="block text-sm font-medium text-text-secondary mb-1">Email Address</label><input type="email" id="editEmail" value={email} onChange={e => setEmail(e.target.value)} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /></div>
-                                </div>
-                            </div>
+                            <div className="p-6"><h2 className="text-xl font-bold text-text-main mb-6">Edit Employee: {employee.name}</h2><div className="space-y-4"><div><label htmlFor="editPhone" className="block text-sm font-medium text-text-secondary mb-1">Phone Number</label><input type="tel" id="editPhone" value={phone} onChange={e => setPhone(e.target.value)} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /></div><div><label htmlFor="editEmail" className="block text-sm font-medium text-text-secondary mb-1">Email Address</label><input type="email" id="editEmail" value={email} onChange={e => setEmail(e.target.value)} className="p-3 block w-full rounded-md bg-background border-primary/30 text-text-main shadow-sm focus:border-primary focus:ring-primary" /></div></div></div>
                             <div className="bg-background px-6 py-4 flex justify-end space-x-3 rounded-b-lg"><button type="button" onClick={onClose} className="px-4 py-2 bg-surface border border-primary/20 rounded-md shadow-sm text-sm font-medium text-text-main hover:bg-primary/20">Cancel</button><button type="submit" className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-background bg-accent-yellow hover:bg-opacity-90">Save Changes</button></div>
                         </form>
                     </div>
